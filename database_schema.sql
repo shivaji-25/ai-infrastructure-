@@ -40,8 +40,14 @@ CREATE TABLE IF NOT EXISTS incidents (
     severity VARCHAR(50) NOT NULL,
     description TEXT,
     recommendation TEXT,
+    workflow_status VARCHAR(20) NOT NULL DEFAULT 'Open',
+    acknowledged_by VARCHAR(100) NULL,
+    acknowledged_at DATETIME NULL,
+    resolved_by VARCHAR(100) NULL,
+    resolved_at DATETIME NULL,
     INDEX idx_incidents_anomaly_id (anomaly_id),
     INDEX idx_incidents_severity (severity),
+    INDEX idx_incidents_workflow_status (workflow_status),
     CONSTRAINT fk_incidents_anomaly
         FOREIGN KEY (anomaly_id) REFERENCES anomalies (id)
         ON DELETE CASCADE
@@ -54,5 +60,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     timestamp DATETIME NOT NULL,
     predicted_severity VARCHAR(50) NOT NULL,
     recommendation TEXT,
+    risk_window_minutes INT NULL,
+    confidence_score FLOAT NULL,
     INDEX idx_predictions_timestamp (timestamp)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

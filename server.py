@@ -122,7 +122,8 @@ def get_incidents(limit: int = Query(default=20, ge=1, le=100)):
         raise HTTPException(status_code=500, detail="Database connection failed")
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
-        SELECT id, anomaly_id, timestamp, severity, description, recommendation
+        SELECT id, anomaly_id, timestamp, severity, description, recommendation,
+               workflow_status, acknowledged_by, acknowledged_at, resolved_by, resolved_at
         FROM incidents
         ORDER BY id DESC
         LIMIT %s
@@ -144,7 +145,8 @@ def get_latest_prediction():
         raise HTTPException(status_code=500, detail="Database connection failed")
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
-        SELECT id, timestamp, predicted_severity, recommendation
+        SELECT id, timestamp, predicted_severity, recommendation,
+               risk_window_minutes, confidence_score
         FROM predictions
         ORDER BY id DESC
         LIMIT 1
@@ -157,11 +159,81 @@ def get_latest_prediction():
         return {
             "predicted_severity": "Normal",
             "recommendation": "No predictions computed yet. Run AI pipeline.",
+            "risk_window_minutes": None,
+            "confidence_score": None,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
     if isinstance(record.get("timestamp"), datetime):
         record["timestamp"] = record["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
     return record
+
+
+@app.patch("/api/incidents/{incident_id}/status")
+def update_incident_status(
+    incident_id: int,
+    workflow_status: str = Query(...),
+    actor: Optional[str] = Query(default="Dashboard user", max_length=100),
+):
+    """Acknowledge or resolve an incident from the dashboard."""
+    conn = get_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    if workflow_status not in {"Open", "Acknowledged", "Resolved"}:
+        conn.close()
+        raise HTTPException(status_code=422, detail="workflow_status must be Open, Acknowledged, or Resolved")
+
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT id FROM incidents WHERE id = %s", (incident_id,))
+    if cursor.fetchone() is None:
+        cursor.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    if workflow_status == "Acknowledged":
+        cursor.execute(
+            """
+            UPDATE incidents
+            SET workflow_status = %s, acknowledged_by = %s, acknowledged_at = NOW(),
+                resolved_by = NULL, resolved_at = NULL
+            WHERE id = %s
+            """,
+            (workflow_status, actor, incident_id),
+        )
+    elif workflow_status == "Resolved":
+        cursor.execute(
+            """
+            UPDATE incidents
+            SET workflow_status = %s, resolved_by = %s, resolved_at = NOW()
+            WHERE id = %s
+            """,
+            (workflow_status, actor, incident_id),
+        )
+    else:
+        cursor.execute(
+            """
+            UPDATE incidents
+            SET workflow_status = 'Open', acknowledged_by = NULL, acknowledged_at = NULL,
+                resolved_by = NULL, resolved_at = NULL
+            WHERE id = %s
+            """,
+            (incident_id,),
+        )
+
+    conn.commit()
+    cursor.execute(
+        """
+        SELECT id, workflow_status, acknowledged_by, acknowledged_at, resolved_by, resolved_at
+        FROM incidents WHERE id = %s
+        """,
+        (incident_id,),
+    )
+    incident = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    for key in ("acknowledged_at", "resolved_at"):
+        if isinstance(incident.get(key), datetime):
+            incident[key] = incident[key].strftime("%Y-%m-%d %H:%M:%S")
+    return incident
 
 
 @app.get("/api/stats")
@@ -184,13 +256,17 @@ def get_dashboard_stats():
     """)
     incident_counts = {row["severity"]: row["count"] for row in cursor.fetchall()}
 
+    cursor.execute("SELECT COUNT(*) AS count FROM incidents WHERE workflow_status = 'Open'")
+    open_incidents = cursor.fetchone()["count"]
+
     cursor.close()
     conn.close()
 
     return {
         "total_metrics": total_metrics,
         "total_anomalies": total_anomalies,
-        "incidents_by_severity": incident_counts
+        "incidents_by_severity": incident_counts,
+        "open_incidents": open_incidents,
     }
 
 
@@ -208,6 +284,25 @@ def trigger_ai_pipeline():
         return {"status": "success", "message": "AI Pipeline executed successfully", "details": results}
     except subprocess.CalledProcessError as e:
         return {"status": "error", "message": str(e), "stderr": e.stderr}
+
+
+@app.post("/api/simulate-spike")
+def simulate_metric_spike():
+    """Inserts a synthetic high-utilization metric spike for testing anomaly detection."""
+    conn = get_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    cursor = conn.cursor()
+    sql = """
+    INSERT INTO system_metrics
+    (timestamp, cpu_usage, memory_usage, disk_usage, network_sent_mb, network_received_mb, running_processes)
+    VALUES (NOW(), 94.8, 89.2, 78.5, 45.2, 112.6, 245)
+    """
+    cursor.execute(sql)
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return {"status": "success", "message": "Injected spike: CPU 94.8%, Memory 89.2%"}
 
 
 if __name__ == "__main__":

@@ -94,8 +94,14 @@ def init_database():
                 severity VARCHAR(50) NOT NULL,
                 description TEXT,
                 recommendation TEXT,
+                workflow_status VARCHAR(20) NOT NULL DEFAULT 'Open',
+                acknowledged_by VARCHAR(100) NULL,
+                acknowledged_at DATETIME NULL,
+                resolved_by VARCHAR(100) NULL,
+                resolved_at DATETIME NULL,
                 INDEX idx_incidents_anomaly_id (anomaly_id),
                 INDEX idx_incidents_severity (severity),
+                INDEX idx_incidents_workflow_status (workflow_status),
                 CONSTRAINT fk_incidents_anomaly
                     FOREIGN KEY (anomaly_id) REFERENCES anomalies (id)
                     ON DELETE CASCADE
@@ -107,6 +113,8 @@ def init_database():
                 timestamp DATETIME NOT NULL,
                 predicted_severity VARCHAR(50) NOT NULL,
                 recommendation TEXT,
+                risk_window_minutes INT NULL,
+                confidence_score FLOAT NULL,
                 INDEX idx_predictions_timestamp (timestamp)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """
@@ -115,6 +123,24 @@ def init_database():
     for table_name, ddl in tables.items():
         cursor.execute(ddl)
         print(f"Table '{table_name}' verified/ready.")
+
+    migrations = [
+        "ALTER TABLE incidents ADD COLUMN workflow_status VARCHAR(20) NOT NULL DEFAULT 'Open'",
+        "ALTER TABLE incidents ADD COLUMN acknowledged_by VARCHAR(100) NULL",
+        "ALTER TABLE incidents ADD COLUMN acknowledged_at DATETIME NULL",
+        "ALTER TABLE incidents ADD COLUMN resolved_by VARCHAR(100) NULL",
+        "ALTER TABLE incidents ADD COLUMN resolved_at DATETIME NULL",
+        "ALTER TABLE incidents ADD INDEX idx_incidents_workflow_status (workflow_status)",
+        "ALTER TABLE predictions ADD COLUMN risk_window_minutes INT NULL",
+        "ALTER TABLE predictions ADD COLUMN confidence_score FLOAT NULL",
+    ]
+    for statement in migrations:
+        try:
+            cursor.execute(statement)
+        except mysql.connector.Error as error:
+            # Duplicate column/index errors are expected after the first startup.
+            if error.errno not in {1060, 1061}:
+                raise
 
     conn.commit()
     cursor.close()

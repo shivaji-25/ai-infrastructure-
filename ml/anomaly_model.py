@@ -92,9 +92,11 @@ scores = model.decision_function(X)
 # STORE RESULTS IN MYSQL
 # ==========================================
 with engine.begin() as connection:
-    # Clear old triage outputs to refresh
-    connection.execute(text("DELETE FROM incidents"))
-    connection.execute(text("DELETE FROM anomalies"))
+    # Preserve acknowledged/resolved incident history between AI pipeline runs.
+    existing_anomalies = {
+        row.metric_id: row.id
+        for row in connection.execute(text("SELECT id, metric_id FROM anomalies"))
+    }
 
     for index, prediction in enumerate(predictions):
         row = valid_data.iloc[index]
@@ -110,8 +112,23 @@ with engine.begin() as connection:
 
         anomaly_score = float(scores[index])
 
-        connection.execute(
-            text("""
+        if metric_id in existing_anomalies:
+            connection.execute(
+                text("""
+                    UPDATE anomalies
+                    SET timestamp = :timestamp, status = :status, anomaly_score = :anomaly_score
+                    WHERE id = :id
+                """),
+                {
+                    "id": existing_anomalies[metric_id],
+                    "timestamp": timestamp,
+                    "status": status,
+                    "anomaly_score": anomaly_score,
+                }
+            )
+        else:
+            connection.execute(
+                text("""
                 INSERT INTO anomalies
                 (
                     metric_id,
@@ -127,13 +144,13 @@ with engine.begin() as connection:
                     :anomaly_score
                 )
             """),
-            {
-                "metric_id": metric_id,
-                "timestamp": timestamp,
-                "status": status,
-                "anomaly_score": anomaly_score
-            }
-        )
+                {
+                    "metric_id": metric_id,
+                    "timestamp": timestamp,
+                    "status": status,
+                    "anomaly_score": anomaly_score
+                }
+            )
 
 # ==========================================
 # DISPLAY RESULTS

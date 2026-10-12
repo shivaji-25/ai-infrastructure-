@@ -1,0 +1,5 @@
+import { ChevronDown, ChevronUp } from 'lucide-react'
+
+export function DataTable({ columns, rows, sort, onSort }) {
+  return <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="border-y bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-950/40 dark:text-slate-400"><tr>{columns.map((column) => <th key={column.key} scope="col" className="whitespace-nowrap px-4 py-3 font-semibold"><button disabled={!column.sortable} onClick={() => column.sortable && onSort(column.key)} className="inline-flex items-center gap-1 disabled:cursor-default">{column.label}{sort.key === column.key && (sort.direction === 'asc' ? <ChevronUp size={14} /> : <ChevronDown size={14} />)}</button></th>)}</tr></thead><tbody className="divide-y">{rows.map((row) => <tr key={row.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50">{columns.map((column) => <td key={column.key} className="whitespace-nowrap px-4 py-3 text-slate-700 dark:text-slate-200">{column.render ? column.render(row) : row[column.key]}</td>)}</tr>)}</tbody></table></div>
+}

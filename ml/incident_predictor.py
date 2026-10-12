@@ -104,8 +104,10 @@ latest_features = latest[features]
 
 # Check if we have multiple classes to train a classifier
 unique_classes = data["severity_number"].nunique()
+class_counts = data["severity_number"].value_counts()
+can_train = unique_classes >= 2 and len(data) >= 10 and class_counts.min() >= 2
 
-if unique_classes >= 2:
+if can_train:
     X = data[features]
     y = data["severity_number"]
 
@@ -129,6 +131,7 @@ if unique_classes >= 2:
     # Predict future severity for latest record
     prediction_num = int(model.predict(latest_features)[0])
     predicted_severity = reverse_mapping.get(prediction_num, "Normal")
+    confidence_score = round(float(model.predict_proba(latest_features).max()) * 100, 1)
 
 else:
     # Fallback heuristic if historical records only have one severity class (e.g. all Normal)
@@ -149,6 +152,15 @@ else:
         predicted_severity = "Low"
     else:
         predicted_severity = "Normal"
+    # This is a rule-based estimate until enough labelled incidents exist to train.
+    confidence_score = 70.0 if predicted_severity != "Normal" else 85.0
+
+risk_window_minutes = {
+    "High": 15,
+    "Medium": 30,
+    "Low": 60,
+    "Normal": None,
+}[predicted_severity]
 
 # Formulate recommendation
 if predicted_severity == "Normal":
@@ -164,6 +176,9 @@ print("\n==========================================")
 print("           PREDICTION RESULT              ")
 print("==========================================")
 print(f"Predicted Severity : {predicted_severity}")
+if risk_window_minutes:
+    print(f"Likely within      : {risk_window_minutes} minutes")
+print(f"Confidence         : {confidence_score}%")
 print(f"Recommendation     : {recommendation}")
 
 # Store prediction in MySQL
@@ -174,13 +189,17 @@ with engine.begin() as conn:
             (
                 timestamp,
                 predicted_severity,
-                recommendation
+                recommendation,
+                risk_window_minutes,
+                confidence_score
             )
-            VALUES (NOW(), :severity, :recommendation)
+            VALUES (NOW(), :severity, :recommendation, :risk_window_minutes, :confidence_score)
         """),
         {
             "severity": predicted_severity,
-            "recommendation": recommendation
+            "recommendation": recommendation,
+            "risk_window_minutes": risk_window_minutes,
+            "confidence_score": confidence_score,
         }
     )
 

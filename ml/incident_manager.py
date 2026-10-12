@@ -36,6 +36,7 @@ SELECT
 FROM anomalies a
 JOIN system_metrics m
 ON a.metric_id = m.id
+WHERE a.status = 'Anomaly'
 ORDER BY a.id ASC
 """
 
@@ -48,13 +49,6 @@ if not rows:
     cursor.close()
     connection.close()
     sys.exit(0)
-
-# Clear previous incidents to keep state synced
-delete_cursor = connection.cursor()
-delete_cursor.execute("DELETE FROM incidents")
-connection.commit()
-delete_cursor.close()
-
 
 def calculate_severity(row):
     """Calculates incident severity based on status and resource usage."""
@@ -115,37 +109,40 @@ def get_recommendation(severity):
     return "Check system health."
 
 
-insert_cursor = connection.cursor()
-sql = """
-INSERT INTO incidents
-(
-    anomaly_id,
-    timestamp,
-    severity,
-    description,
-    recommendation
-)
-VALUES (%s, %s, %s, %s, %s)
-"""
+write_cursor = connection.cursor(dictionary=True)
 
 for row in rows:
     severity = calculate_severity(row)
     description = get_description(row)
     recommendation = get_recommendation(severity)
 
-    insert_cursor.execute(
-        sql,
-        (
-            row["anomaly_id"],
-            row["timestamp"],
-            severity,
-            description,
-            recommendation
-        )
+    write_cursor.execute(
+        "SELECT id, workflow_status FROM incidents WHERE anomaly_id = %s ORDER BY id DESC LIMIT 1",
+        (row["anomaly_id"],),
     )
+    existing = write_cursor.fetchone()
+    if existing is None:
+        write_cursor.execute(
+            """
+            INSERT INTO incidents
+            (anomaly_id, timestamp, severity, description, recommendation, workflow_status)
+            VALUES (%s, %s, %s, %s, %s, 'Open')
+            """,
+            (row["anomaly_id"], row["timestamp"], severity, description, recommendation),
+        )
+    elif existing["workflow_status"] != "Resolved":
+        # Keep the user's acknowledgement while refreshing the AI diagnosis.
+        write_cursor.execute(
+            """
+            UPDATE incidents
+            SET timestamp = %s, severity = %s, description = %s, recommendation = %s
+            WHERE id = %s
+            """,
+            (row["timestamp"], severity, description, recommendation, existing["id"]),
+        )
 
 connection.commit()
-insert_cursor.close()
+write_cursor.close()
 
 print("Incident triage completed successfully.")
 
